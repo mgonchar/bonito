@@ -57,7 +57,7 @@ def main(args):
             overlap=args.overlap,
             batchsize=args.batchsize,
             quantize=args.quantize,
-            use_koi=True,
+            use_koi=False,
         )
         model = model.apply(fuse_bn_)
     except FileNotFoundError:
@@ -163,7 +163,7 @@ def main(args):
     if args.save_ctc:
         writer_kwargs['rna'] = args.rna
         writer_kwargs['min_accuracy'] = args.min_accuracy_save_ctc
-        
+
     writer = ResultsWriter(
         fmt.mode, tqdm(results, desc="> calling", unit=" reads", leave=False,
                        total=num_reads, smoothing=0, ascii=True, ncols=100,
@@ -195,7 +195,7 @@ def argparser():
     parser.add_argument("--modified-procs", default=8, type=int)
     parser.add_argument("--modified-device", default=None)
     parser.add_argument("--read-ids")
-    parser.add_argument("--device", default="cuda")
+    parser.add_argument("--device", choices=["cpu", "hpu", "cuda"], default="hpu")
     parser.add_argument("--seed", default=25, type=int)
     parser.add_argument("--weights", default=0, type=int)
     parser.add_argument("--skip", action="store_true", default=False)
@@ -218,3 +218,8 @@ def argparser():
     parser.add_argument("--mm2-preset", default='lr:hq', type=str)
     parser.add_argument('-v', '--verbose', action='count', default=0)
     return parser
+
+if __name__ == "__main__":
+    parser = argparser()
+    args = parser.parse_args()
+    main(args)

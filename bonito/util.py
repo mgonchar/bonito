@@ -18,7 +18,16 @@ import torch
 
 import parasail
 import numpy as np
-from torch.cuda import get_device_capability
+
+try:
+    import habana_frameworks.torch.core as htcore
+except ImportError:
+    pass
+
+try:
+    from torch.cuda import get_device_capability
+except ImportError:
+    pass
 
 try:
     from claragenomics.bindings import cuda
@@ -47,10 +56,16 @@ def init(seed, device, deterministic=True):
     np.random.seed(seed)
     torch.manual_seed(seed)
     if device == "cpu": return
-    torch.backends.cudnn.enabled = True
-    torch.backends.cudnn.deterministic = deterministic
-    torch.backends.cudnn.benchmark = (not deterministic)
-    assert(torch.cuda.is_available())
+    if device == "hpu":
+        #torch.use_deterministic_algorithms(deterministic)
+        assert(torch.hpu.is_available())
+        return
+
+    if device == "cuda":
+        torch.backends.cudnn.enabled = True
+        torch.backends.cudnn.deterministic = deterministic
+        torch.backends.cudnn.benchmark = (not deterministic)
+        assert(torch.cuda.is_available())
 
 
 def permute(x, input_layout, output_layout):
@@ -106,10 +121,20 @@ def half_supported():
     """
     Returns whether FP16 is support on the GPU
     """
+
+    # For now only test f32
+    """
     try:
-        return get_device_capability()[0] >= 7
+        if torch.hpu.is_available():
+            return True
+
+        if torch.cuda.is_available()
+            return get_device_capability()[0] >= 7
     except:
         return False
+    """
+
+    return False
 
 
 def phred(prob, scale=1.0, bias=0.0):
@@ -291,6 +316,7 @@ def load_model(dirname, device, weights=None, half=None, chunksize=None, batchsi
 def _load_model(model_file, config, device, half=None, use_koi=False):
     device = torch.device(device)
     Model = load_symbol(config, "Model")
+    config["model"]["device"] = device
     model = Model(config)
 
     if use_koi:
@@ -303,7 +329,8 @@ def _load_model(model_file, config, device, half=None, use_koi=False):
             quantize=config["basecaller"]["quantize"],
         )
 
-    state_dict = torch.load(model_file, map_location=device)
+    state_dict = torch.load(model_file, map_location = "cpu" if device.type == "hpu" else device, weights_only=False)
+
     state_dict = {k2: state_dict[k1] for k1, k2 in match_names(state_dict, model).items()}
     new_state_dict = OrderedDict()
     for k, v in state_dict.items():
@@ -318,6 +345,11 @@ def _load_model(model_file, config, device, half=None, use_koi=False):
     if half: model = model.half()
     model.eval()
     model.to(device)
+
+    if device.type == "hpu" and os.getenv("PT_HPU_LAZY_MODE", "1") != "0":
+        from habana_frameworks.torch.hpu import wrap_in_hpu_graph
+        model = wrap_in_hpu_graph(model)
+
     return model
 
 

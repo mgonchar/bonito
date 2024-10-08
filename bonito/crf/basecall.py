@@ -4,11 +4,19 @@ Bonito CRF basecalling
 
 import torch
 import numpy as np
-from koi.decode import beam_search, to_str
+#from koi.decode import beam_search, to_str
 
-from bonito.multiprocessing import thread_iter
+from .decode import decode_cpu
+
+from bonito.multiprocessing import thread_iter, thread_map
+
 from bonito.util import chunk, stitch, batchify, unbatchify, half_supported
 
+try:
+    import habana_frameworks.torch.hpu as torch_hpu
+    import habana_frameworks.torch.core as htcore
+except ImportError:
+    pass
 
 def stitch_results(results, length, size, overlap, stride, reverse=False):
     """
@@ -31,19 +39,31 @@ def compute_scores(model, batch, beam_width=32, beam_cut=100.0, scale=1.0, offse
     with torch.inference_mode():
         device = next(model.parameters()).device
         dtype = torch.float16 if half_supported() else torch.float32
-        scores = model(batch.to(dtype).to(device))
+
+        scores = model(batch.to(dtype=dtype, device=device))
+        if device.type == "hpu":
+            htcore.mark_step()
+
         if reverse:
             scores = model.seqdist.reverse_complement(scores)
-        with torch.cuda.device(scores.device):
-            sequence, qstring, moves = beam_search(
-                scores, beam_width=beam_width, beam_cut=beam_cut,
-                scale=scale, offset=offset, blank_score=blank_score
-            )
-        return {
-            'moves': moves,
-            'qstring': qstring,
-            'sequence': sequence,
-        }
+
+        if device.type == "cuda":
+            with torch.cuda.device(scores.device):
+                computed_scores = model.seqdist(scores.to(torch.float32))
+        else:
+            computed_scores = model.seqdist(scores.to(torch.float32))
+
+        return computed_scores
+
+        #    sequence, qstring, moves = beam_search(
+        #        scores, beam_width=beam_width, beam_cut=beam_cut,
+        #        scale=scale, offset=offset, blank_score=blank_score
+        #    )
+        #return {
+        #    'moves': moves,
+        #    'qstring': qstring,
+        #    'sequence': sequence,
+        #}
 
 
 def fmt(stride, attrs, rna=False):
@@ -77,7 +97,8 @@ def basecall(model, reads, chunksize=4000, overlap=100, batchsize=32,
         for ((read, start, end), scores) in unbatchify(scores)
     )
 
-    return thread_iter(
-        (read, fmt(model.stride, attrs, rna))
-        for read, attrs in results
-    )
+    #return thread_iter(
+    #    (read, fmt(model.stride, attrs, rna))
+    #    for read, attrs in results
+    #)
+    return thread_map(decode_cpu, results, n_thread=24)
